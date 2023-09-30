@@ -10,14 +10,25 @@
 #include <condition_variable>
 #include <atomic>
 #include <deque>
+#include <set>
+#include <sys/epoll.h>
+#include <boost/beast/http.hpp>
+#include <boost/asio.hpp>
 
 namespace ThreadPool {
+  using http = boost::beast::http;
+  using net = boost::asio;
 
   class ThreadPool {
     public:
     struct Worker {
       int id_;
       std::thread* thread_;
+      // 等待链接的socket
+      int wait_fd_;
+      // 活跃的socket
+      std::set<int> active_;
+      // 每个socket应该做的映射
     };
 
     public:
@@ -25,27 +36,42 @@ namespace ThreadPool {
     ThreadPool(int n): thread_len_(n), workers_{n}, threads_{n} {}
 
     void Func(Worker& w) {
+      net::streambuf sb;
+      int epoll_fd = epoll_create1(0);
+      w.wait_fd_ = -1;
 
       while (1) {
-        {
+        if (true){
           std::unique_lock<std::mutex> lock(mutex_fds_);
           cv_fds_.wait(lock, [&](){ return fds_.size() > 0; });
           int fd = take();
           if (fd == -1) {
             continue;
           }
+          w.wait_fd_ = fd;
           std::cout << "thread id: " << w.id_ << " fd: " << fd << std::endl;
         }
 
-        // epoll循环处理，或者改成协程处理
-        
-        // 如果是新的socket，先处理http target。建立链接，然后放到正在发送map{fd, fd}中。
+        if (w.wait_fd_ != -1) {
+          http::request<http::string_body> req;
+          http::read(w.wait_fd_, sb, req); // 报错处理
+
+          auto mth = std::string(req.method_string());
+			    auto target_view = std::string(req.target()); // 怎么解析出来的，直接用boost的http解析
+			    auto pa = std::string(req[http::field::proxy_authorization]);
+          
+          // do connect
+
+          w.active_.insert(w.wait_fd_);
+          w.wait_fd_ = -1;
+        }
 
         // 收到的每个链接都正常转发。
 
         // 处理完去抢fd
         
         // 我不能一直循环啊，没有任务的时候是怎么处理的
+        take(); // 再尝试拿一个
       }
       
     }
