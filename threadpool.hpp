@@ -10,14 +10,13 @@
 #include <condition_variable>
 #include <atomic>
 #include <deque>
-#include <set>
-#include <sys/epoll.h>
-#include <boost/beast/http.hpp>
-#include <boost/asio.hpp>
+#include <unordered_map>
+#include <unistd.h>
+
+#include "http.h"
+#include "io.h"
 
 namespace ThreadPool {
-  using http = boost::beast::http;
-  using net = boost::asio;
 
   class ThreadPool {
     public:
@@ -26,9 +25,10 @@ namespace ThreadPool {
       std::thread* thread_;
       // 等待链接的socket
       int wait_fd_;
-      // 活跃的socket
-      std::set<int> active_;
-      // 每个socket应该做的映射
+      // socket映射
+      std::unordered_map<int, int> local2remote_;
+      std::unordered_map<int, int> remote2local_;
+      
     };
 
     public:
@@ -36,15 +36,22 @@ namespace ThreadPool {
     ThreadPool(int n): thread_len_(n), workers_{n}, threads_{n} {}
 
     void Func(Worker& w) {
-      net::streambuf sb;
-      int epoll_fd = epoll_create1(0);
+      int epoll_fd = IO::CreateEpoll();
+      if (epoll_fd < 0) {
+        std::cout << "CreateEpoll error" << std::endl;
+        return;
+      }
+      
+      int ret = 0;
       w.wait_fd_ = -1;
+      int target_fd = -1;
 
+      int fd;
       while (1) {
-        if (true){
+        if (w.local2remote_.empty() && w.wait_fd_ == -1){
           std::unique_lock<std::mutex> lock(mutex_fds_);
           cv_fds_.wait(lock, [&](){ return fds_.size() > 0; });
-          int fd = take();
+          fd = take();
           if (fd == -1) {
             continue;
           }
@@ -53,25 +60,90 @@ namespace ThreadPool {
         }
 
         if (w.wait_fd_ != -1) {
-          http::request<http::string_body> req;
-          http::read(w.wait_fd_, sb, req); // 报错处理
+          bool handle_ok = true;
+          // 解析http请求并构建代理
+          do {
+            HTTP::Request req;
+            HTTP::read_http_req(w.wait_fd_, req);
+            if (ret != 0) {
+              std::cout << "read_http_req error: " << ret << std::endl;
+              handle_ok = false;
+              break;
+            }
+            std::cout << "method: " << req.method << " target: " << req.target << std::endl;
 
-          auto mth = std::string(req.method_string());
-			    auto target_view = std::string(req.target()); // 怎么解析出来的，直接用boost的http解析
-			    auto pa = std::string(req[http::field::proxy_authorization]);
-          
-          // do connect
+            auto& mth = req.method;
+            auto& target = req.target;
+            auto pos = target.find(':');
+            if (pos == std::string::npos) {
+              std::cout << "error target: " << target << std::endl;
+              handle_ok = false;
+              break;
+            }
 
-          w.active_.insert(w.wait_fd_);
+            std::string host(target.substr(0, pos));
+            std::string port(target.substr(pos + 1));
+            std::cout << "host: " << host << " port: " << port << std::endl;
+            target_fd = IO::CreateConn(host, std::stoi(port));
+            if (ret < 0) {
+              std::cout << "CreateConn error: " << ret << std::endl;
+              handle_ok = false;
+              break;
+            }
+            w.local2remote_[w.wait_fd_] = target_fd;
+            w.remote2local_[target_fd] = w.wait_fd_;
+          }while(0);
+
+          if (!handle_ok) {
+            close(w.wait_fd_);
+          } else {
+            // add epoll
+            if (IO::AddEpoll(epoll_fd, w.wait_fd_) != 0 || IO::AddEpoll(epoll_fd, target_fd) != 0) {
+              std::cout << "AddEpoll error" << std::endl;
+              close(w.wait_fd_);
+              close(target_fd);
+              w.local2remote_.erase(w.wait_fd_);
+              w.remote2local_.erase(target_fd);
+            }
+          }
+
           w.wait_fd_ = -1;
         }
 
-        // 收到的每个链接都正常转发。
+        // epoll wait
+        const int MAX_EVENTS = 10;
+        epoll_event events[MAX_EVENTS];
+        auto num_event = IO::EpollWait(epoll_fd, events, MAX_EVENTS, 0);
+        if (num_event < 0) {
+          std::cout << "EpollWait error" << std::endl;
+          continue;
+        }
 
-        // 处理完去抢fd
+        for (int i=0; i<num_event; ++i) {
+          auto& ev = events[i];
+          auto fd = ev.data.fd;
+          if (ev.events & EPOLLIN) {
+            char buf[256];
+            int len = read(fd, buf, sizeof(buf));
+            if (len > 0) {
+              auto target_fd = w.local2remote_.count(fd) ? w.local2remote_[fd] : w.remote2local_[fd];
+              write(target_fd, buf, len);
+            } else if (len < 0) {
+              if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                continue;
+              } else {
+                // 1.接收端出错，
+              }
+            } else { // 正常关闭
+              
+            }
+
+          }
+        }
+
         
         // 我不能一直循环啊，没有任务的时候是怎么处理的
-        take(); // 再尝试拿一个
+        w.wait_fd_ = take(); // 再尝试拿一个
       }
       
     }

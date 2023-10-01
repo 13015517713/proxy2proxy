@@ -12,6 +12,7 @@ endif()
 set(srcs
     main.cpp
     io.cpp
+    http.cpp
 )
 add_executable(main ${srcs})
 
