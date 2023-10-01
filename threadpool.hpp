@@ -89,6 +89,8 @@ namespace ThreadPool {
               std::cout << "CreateConn error: " << ret << std::endl;
               handle_ok = false;
               break;
+            } else {
+              std::cout << "CreateConn success: " << target_fd << std::endl;
             }
             w.local2remote_[w.wait_fd_] = target_fd;
             w.remote2local_[target_fd] = w.wait_fd_;
@@ -127,20 +129,26 @@ namespace ThreadPool {
             int len = read(fd, buf, sizeof(buf));
             if (len > 0) {
               auto target_fd = w.local2remote_.count(fd) ? w.local2remote_[fd] : w.remote2local_[fd];
-              write(target_fd, buf, len);
+              int ret = IO::SendUntilAll(target_fd, buf, len);
+              if (ret < 0) {
+                // 2.对端出错，关闭接收
+                shutdown(fd, SHUT_RD);
+              }
             } else if (len < 0) {
               if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
                 continue;
               } else {
-                // 1.接收端出错，
+                // 1.接收端出错
+                shutdown(target_fd, SHUT_WR);
               }
-            } else { // 正常关闭
-              
+            } else {
+              // len = 0
+              shutdown(target_fd, SHUT_WR);
+              IO::DelEpoll(epoll_fd, fd);
             }
 
           }
         }
-
         
         // 我不能一直循环啊，没有任务的时候是怎么处理的
         w.wait_fd_ = take(); // 再尝试拿一个

@@ -134,5 +134,20 @@ namespace IO {
         return n;
     }
 
+    int SendUntilAll(int fd, const char *buf, int len) {
+        int n = 0;
+        while (n < len) {
+            int ret = send(fd, buf + n, len - n, 0);
+            if (ret < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                    continue;
+                }
+                return -1;
+            }
+            n += ret;
+        }
+        return n;
+    }
+
 }; // namespace IO
 

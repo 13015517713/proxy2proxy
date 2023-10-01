@@ -17,5 +17,9 @@ namespace IO {
 
     int AddEpoll(int epoll_fd, int fd);
 
-     int EpollWait(int epoll_fd, struct epoll_event *events, int max_events, int timeout);
+    int DelEpoll(int epoll_fd, int fd);
+
+    int EpollWait(int epoll_fd, struct epoll_event *events, int max_events, int timeout);
+
+    int SendUntilAll(int fd, const char *buf, int len);
 }
