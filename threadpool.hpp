@@ -70,7 +70,7 @@ namespace ThreadPool {
               handle_ok = false;
               break;
             }
-            std::cout << "method: " << req.method << " target: " << req.target << std::endl;
+            std::cout << req.to_string() << std::endl;
 
             auto& mth = req.method;
             auto& target = req.target;
@@ -92,6 +92,16 @@ namespace ThreadPool {
             } else {
               std::cout << "CreateConn success: " << target_fd << std::endl;
             }
+
+            // return http 200
+            static const std::string http_200 = "HTTP/1.1 200 Connection Established\r\n\r\n";
+            auto len = IO::SendUntilAll(w.wait_fd_, http_200.c_str(), http_200.size());
+            if (len < 0) {
+              std::cout << "SendUntilAll error: " << len << std::endl;
+              handle_ok = false;
+              break;
+            }
+
             w.local2remote_[w.wait_fd_] = target_fd;
             w.remote2local_[target_fd] = w.wait_fd_;
           }while(0);
@@ -100,13 +110,20 @@ namespace ThreadPool {
             close(w.wait_fd_);
           } else {
             // add epoll
-            if (IO::AddEpoll(epoll_fd, w.wait_fd_) != 0 || IO::AddEpoll(epoll_fd, target_fd) != 0) {
-              std::cout << "AddEpoll error" << std::endl;
-              close(w.wait_fd_);
-              close(target_fd);
-              w.local2remote_.erase(w.wait_fd_);
-              w.remote2local_.erase(target_fd);
+            if (IO::AddEpoll(epoll_fd, w.wait_fd_) == 0) {
+              if (IO::AddEpoll(epoll_fd, target_fd) == 0) {
+                goto add_epoll_ok;
+              } else {
+                IO::DelEpoll(epoll_fd, w.wait_fd_);
+              }
             }
+            std::cout << "AddEpoll error" << std::endl;
+            close(w.wait_fd_);
+            close(target_fd);
+            w.local2remote_.erase(w.wait_fd_);
+            w.remote2local_.erase(target_fd);
+
+            add_epoll_ok:;
           }
 
           w.wait_fd_ = -1;
@@ -126,32 +143,44 @@ namespace ThreadPool {
           auto fd = ev.data.fd;
           if (ev.events & EPOLLIN) {
             char buf[256];
-            int len = read(fd, buf, sizeof(buf));
+            int len = recv(fd, buf, sizeof(buf), MSG_DONTWAIT);
             if (len > 0) {
+              std::cout << "read " << len << " bytes from " << fd << std::endl;
               auto target_fd = w.local2remote_.count(fd) ? w.local2remote_[fd] : w.remote2local_[fd];
               int ret = IO::SendUntilAll(target_fd, buf, len);
               if (ret < 0) {
                 // 2.对端出错，关闭接收
                 shutdown(fd, SHUT_RD);
+                // 可以删除了
+                IO::DelEpoll(epoll_fd, fd);
               }
             } else if (len < 0) {
               if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
                 continue;
               } else {
+                // 这个和下面都正常关闭和删除
+
                 // 1.接收端出错
+                std::cout << "read error: " << strerror(errno) << std::endl;
                 shutdown(target_fd, SHUT_WR);
               }
             } else {
               // len = 0
+              close(fd);
               shutdown(target_fd, SHUT_WR);
-              IO::DelEpoll(epoll_fd, fd);
+              if (IO::DelEpoll(epoll_fd, fd) == 0) {
+                if (w.local2remote_.count(fd)) {
+                  w.local2remote_.erase(fd);
+                } else {
+                  w.remote2local_.erase(fd);
+                }
+              }
             }
 
           }
         }
         
-        // 我不能一直循环啊，没有任务的时候是怎么处理的
-        w.wait_fd_ = take(); // 再尝试拿一个
+        w.wait_fd_ = take(); // 拿不拿都行
       }
       
     }

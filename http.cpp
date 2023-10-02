@@ -87,7 +87,7 @@ int read_http_req(int sockfd, Request& req) {
     // Exclude line terminator
     auto end = buf + len - line_terminator_len;
 
-    printf("line: %s\n", buf);
+    // printf("line: %s\n", buf);
 
     if (req.method.empty()) {
       auto p = buf;
@@ -109,7 +109,7 @@ int read_http_req(int sockfd, Request& req) {
   
     // 等待解析key value
     bool parse_ok = parse_header(buf, end, [&](std::string &&key, std::string &&val) {
-      std::cout << "key: " << key << " val: " << val << std::endl;
+      // std::cout << "key: " << key << " val: " << val << std::endl;
       if (key == "Host") {
         req.target = val;
       }
@@ -118,7 +118,7 @@ int read_http_req(int sockfd, Request& req) {
       return -1;
     }
   }
-  std::cout << req.to_string() << std::endl;
+  // std::cout << req.to_string() << std::endl;
   return 0;
 }
 

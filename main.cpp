@@ -26,7 +26,9 @@ int AcceptLoop(int fd, ThreadPool::ThreadPool& tp) {
             if ((errno == EAGAIN) || (errno == EINTR) || (errno == EWOULDBLOCK)) {
                 continue;
             }
-            return -1; // 出现问题;
+            // return -1; // 出现问题;
+            std::cout << "Accept error but ignore." << std::endl;
+            continue; // 暂时忽略问题
         }
     }
     return 0;
