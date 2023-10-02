@@ -35,6 +35,8 @@ int AcceptLoop(int fd, ThreadPool::ThreadPool& tp) {
 }
 
 int main() {
+    signal(SIGPIPE, SIG_IGN);
+
     int accept_fd = IO::CreateTcpSocket(params::IP, params::PORT, true);
     if (accept_fd < 0) {
         std::cout << "CreateTcpSocket failed" << std::endl;

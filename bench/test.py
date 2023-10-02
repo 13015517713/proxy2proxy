@@ -12,7 +12,7 @@ target_port = 443
 conn = http.client.HTTPConnection(proxy_host, proxy_port)
 
 # 发送CONNECT请求
-conn.request("CONNECT", target_host + ":" + str(target_port)) // target要重新解析
+conn.request("CONNECT", target_host + ":" + str(target_port))
 
 # 获取响应
 response = conn.getresponse()

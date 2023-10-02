@@ -17,7 +17,10 @@
 #include "io.h"
 
 namespace ThreadPool {
-
+  static inline void thread_init() {
+    // 忽略SIGPIPE信号
+    signal(SIGPIPE, SIG_IGN);
+  }
   class ThreadPool {
     public:
     struct Worker {
@@ -36,6 +39,8 @@ namespace ThreadPool {
     ThreadPool(int n): thread_len_(n), workers_{n}, threads_{n} {}
 
     void Func(Worker& w) {
+      thread_init();
+
       int epoll_fd = IO::CreateEpoll();
       if (epoll_fd < 0) {
         std::cout << "CreateEpoll error" << std::endl;
@@ -83,14 +88,14 @@ namespace ThreadPool {
 
             std::string host(target.substr(0, pos));
             std::string port(target.substr(pos + 1));
-            std::cout << "host: " << host << " port: " << port << std::endl;
+            // std::cout << "host: " << host << " port: " << port << std::endl;
             target_fd = IO::CreateConn(host, std::stoi(port));
             if (ret < 0) {
               std::cout << "CreateConn error: " << ret << std::endl;
               handle_ok = false;
               break;
             } else {
-              std::cout << "CreateConn success: " << target_fd << std::endl;
+              // std::cout << "CreateConn success: " << target_fd << std::endl;
             }
 
             // return http 200
@@ -117,7 +122,7 @@ namespace ThreadPool {
                 IO::DelEpoll(epoll_fd, w.wait_fd_);
               }
             }
-            std::cout << "AddEpoll error" << std::endl;
+            // std::cout << "AddEpoll error" << std::endl;
             close(w.wait_fd_);
             close(target_fd);
             w.local2remote_.erase(w.wait_fd_);
@@ -145,28 +150,30 @@ namespace ThreadPool {
             char buf[256];
             int len = recv(fd, buf, sizeof(buf), MSG_DONTWAIT);
             if (len > 0) {
-              std::cout << "read " << len << " bytes from " << fd << std::endl;
+              // std::cout << "read " << len << " bytes from " << fd << std::endl;
               auto target_fd = w.local2remote_.count(fd) ? w.local2remote_[fd] : w.remote2local_[fd];
-              int ret = IO::SendUntilAll(target_fd, buf, len);
+              int ret = IO::SendUntilAll(target_fd, buf, len);  // 如果对端关闭，这里会返回-1，信号SIGPIPE
               if (ret < 0) {
-                // 2.对端出错，关闭接收
                 shutdown(fd, SHUT_RD);
-                // 可以删除了
-                IO::DelEpoll(epoll_fd, fd);
               }
             } else if (len < 0) {
               if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
                 continue;
               } else {
                 // 这个和下面都正常关闭和删除
-
-                // 1.接收端出错
                 std::cout << "read error: " << strerror(errno) << std::endl;
                 shutdown(target_fd, SHUT_WR);
+                if (IO::DelEpoll(epoll_fd, fd)) {
+                  if (w.local2remote_.count(fd)) {
+                    w.local2remote_.erase(fd);
+                  } else {
+                    w.remote2local_.erase(fd);
+                  }
+                }
               }
             } else {
               // len = 0
-              close(fd);
+              shutdown(fd, SHUT_RD);
               shutdown(target_fd, SHUT_WR);
               if (IO::DelEpoll(epoll_fd, fd) == 0) {
                 if (w.local2remote_.count(fd)) {
