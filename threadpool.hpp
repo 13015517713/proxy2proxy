@@ -38,13 +38,13 @@ namespace ThreadPool {
     public:
 
     ThreadPool(int n): thread_len_(n), workers_{n}, threads_{n} {
-      for (auto &w : workers_) {
-        {
-          std::cout << "max_bucket_count: " << w.local2remote_.max_bucket_count() << std::endl;
-          std::cout << "bucket_count_: " << w.local2remote_.bucket_count() << std::endl;
-          std::cout << "max_size: " << w.local2remote_.max_size() << std::endl;
-        }
-      }
+      // for (auto &w : workers_) {
+      //   {
+      //     std::cout << "max_bucket_count: " << w.local2remote_.max_bucket_count() << std::endl;
+      //     std::cout << "bucket_count_: " << w.local2remote_.bucket_count() << std::endl;
+      //     std::cout << "max_size: " << w.local2remote_.max_size() << std::endl;
+      //   }
+      // }
     }
 
     void Func(Worker& w) {
@@ -62,7 +62,7 @@ namespace ThreadPool {
       int target_fd = -1;
 
       int fd;
-      while (1) {
+      while (1) { 
         if (w.local2remote_.empty() && w.wait_fd_ == -1){
           std::unique_lock<std::recursive_mutex> lock(mutex_fds_);
           cv_fds_.wait(lock, [&](){ return fds_.size() > 0; });
@@ -85,7 +85,6 @@ namespace ThreadPool {
             }
             target_fd = h.target_fd_;
             assert(target_fd != -1);
-            printf("unordered_map: %d -> %d, size = %d\n", w.wait_fd_, target_fd, w.local2remote_.size());
             w.local2remote_[w.wait_fd_] = target_fd;
             w.remote2local_[target_fd] = w.wait_fd_;
           }while(0);
