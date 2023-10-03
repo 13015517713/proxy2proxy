@@ -209,12 +209,16 @@ namespace ThreadPool {
       return fd;
     }
 
-    void submit(int connfd) {
+    void submit(int fd) {
       {
         std::lock_guard<std::recursive_mutex> lock(mutex_fds_);
-        fds_.push_back(connfd);
+        fds_.push_back(fd);
       }
       cv_fds_.notify_one();
+    }
+
+    void submit_socket_link(int fd) {
+      link_fds_.push_back(fd);
     }
 
     ~ThreadPool () {
@@ -233,6 +237,7 @@ namespace ThreadPool {
     std::mutex mutex_;
     std::condition_variable cv_;
     
+    std::deque<int> link_fds_;
     std::deque<int> fds_;
     std::recursive_mutex mutex_fds_;
     std::condition_variable_any cv_fds_;
