@@ -9,6 +9,8 @@ namespace IO {
     // accept获取链接
     int Accept(int fd, struct sockaddr_in *addr);
 
+    int SetNonBlock(int fd);
+
     int Connect(int fd, const char *pszIP, const unsigned short shPort);
 
     int CreateConn(const std::string& host, const uint16_t port);

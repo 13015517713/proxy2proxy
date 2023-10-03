@@ -29,6 +29,20 @@ namespace IO {
         addr.sin_addr.s_addr = nIP;
     }
 
+    int SetNonBlock(int fd) {
+        int flags = fcntl(fd, F_GETFL, 0);
+        if (flags == -1) {
+            return -1;
+        }
+
+        flags |= O_NONBLOCK;
+        if (fcntl(fd, F_SETFL, flags) == -1) {
+            return -1;
+        }
+
+        return 0;
+    }
+
     int CreateTcpSocket(const char *pszIP /* = "*" */, const unsigned short shPort /* = 0 */, bool bReuse /* = false */)
     {
         int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -64,6 +78,7 @@ namespace IO {
     {
         struct sockaddr_in addr;
         SetAddr(pszIP, shPort, addr);
+        
         return connect(fd, (struct sockaddr *)&addr, sizeof(addr));
     }
 
@@ -76,6 +91,11 @@ namespace IO {
             std::cout << "CreateTcpSocket error: " << target_fd << std::endl;
             return -1;
         }
+        
+        // prevent connect timeout
+        if (SetNonBlock(target_fd) != 0) {
+            return -1;
+        }
 
         hostent *hostinfo = gethostbyname(host.c_str());
         if (hostinfo == nullptr) {
@@ -84,10 +104,47 @@ namespace IO {
         }
 
         ret = IO::Connect(target_fd, inet_ntoa(*(struct in_addr*)hostinfo->h_addr), port);
-        if (ret != 0) {
-            std::cout << "Connect error: " << ret << std::endl;
-            return -1;
+        // 10ms timeout
+        if (ret < 0) {
+            if (errno == EINPROGRESS) {
+                struct timeval tv;
+                tv.tv_sec = 1;
+                tv.tv_usec = 0;
+                fd_set wset;
+                FD_ZERO(&wset);
+                FD_SET(target_fd, &wset);
+                ret = select(target_fd + 1, nullptr, &wset, nullptr, &tv);
+                if (ret == 0) {
+                    std::cout << "Connect timeout " << " Host" << host << " Port" << port << std::endl;
+                    return -1;
+                } else if (ret < 0) {
+                    std::cout << "Connect error: " << ret << strerror(errno) << std::endl;
+                    return -1;
+                } else {
+                    int error = 0;
+                    socklen_t len = sizeof(error);
+                    ret = getsockopt(target_fd, SOL_SOCKET, SO_ERROR, &error, &len);
+                    if (ret != 0) {
+                        std::cout << "getsockopt error: " << ret << strerror(errno) << std::endl;
+                        return -1;
+                    }
+                    if (error != 0) {
+                        std::cout << "Connect error: " << error << strerror(error) << std::endl;
+                        return -1;
+                    }
+                }
+            } else {
+                std::cout << "Connect error: " << ret << strerror(errno) << std::endl;
+                return -1;
+            }
         }
+        
+        // if (ret != 0) {
+        //     std::cout << "Connect error: " << ret << strerror(errno) << std::endl;
+        //     return -1;
+        // }
+
+
 
         return target_fd;
     }

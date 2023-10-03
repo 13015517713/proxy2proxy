@@ -18,7 +18,11 @@ int AcceptLoop(int fd, ThreadPool::ThreadPool& tp) {
         struct sockaddr_in addr;
         int connfd = IO::Accept(fd, &addr);
         if (connfd >= 0) {
-            std::cout << "Accept " << inet_ntoa(addr.sin_addr) << ":" << ntohs(addr.sin_port) << std::endl;
+            if (IO::SetNonBlock(connfd) != 0) {
+                std::cout << "SetNonBlock error" << std::endl;
+                continue;
+            }
+            std::cout << "Accept " << inet_ntoa(addr.sin_addr) << ":" << ntohs(addr.sin_port) << " fd: " << connfd << std::endl;
             // 放到全局队列里
             tp.submit(connfd);
         } else {

@@ -16,6 +16,8 @@ set(srcs
 )
 add_executable(main ${srcs})
 
+set(CMAKE_GENERATOR_PLATFORM x64)
+
 set_target_properties(main PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON

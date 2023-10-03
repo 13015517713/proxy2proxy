@@ -12,6 +12,7 @@
 #include <deque>
 #include <unordered_map>
 #include <unistd.h>
+#include <assert.h>
 
 #include "http.h"
 #include "io.h"
@@ -21,6 +22,7 @@ namespace ThreadPool {
     // 忽略SIGPIPE信号
     signal(SIGPIPE, SIG_IGN);
   }
+
   class ThreadPool {
     public:
     struct Worker {
@@ -29,16 +31,24 @@ namespace ThreadPool {
       // 等待链接的socket
       int wait_fd_;
       // socket映射
-      std::unordered_map<int, int> local2remote_;
+      std::unordered_map<int, int> local2remote_; // 为啥会出问题？
       std::unordered_map<int, int> remote2local_;
-      
     };
 
     public:
 
-    ThreadPool(int n): thread_len_(n), workers_{n}, threads_{n} {}
+    ThreadPool(int n): thread_len_(n), workers_{n}, threads_{n} {
+      for (auto &w : workers_) {
+        {
+          std::cout << "max_bucket_count: " << w.local2remote_.max_bucket_count() << std::endl;
+          std::cout << "bucket_count_: " << w.local2remote_.bucket_count() << std::endl;
+          std::cout << "max_size: " << w.local2remote_.max_size() << std::endl;
+        }
+      }
+    }
 
     void Func(Worker& w) {
+      
       thread_init();
 
       int epoll_fd = IO::CreateEpoll();
@@ -54,59 +64,28 @@ namespace ThreadPool {
       int fd;
       while (1) {
         if (w.local2remote_.empty() && w.wait_fd_ == -1){
-          std::unique_lock<std::mutex> lock(mutex_fds_);
+          std::unique_lock<std::recursive_mutex> lock(mutex_fds_);
           cv_fds_.wait(lock, [&](){ return fds_.size() > 0; });
           fd = take();
-          if (fd == -1) {
-            continue;
-          }
           w.wait_fd_ = fd;
-          std::cout << "thread id: " << w.id_ << " fd: " << fd << std::endl;
         }
 
         if (w.wait_fd_ != -1) {
+          std::cout << "thread " << w.id_ << " handle " << w.wait_fd_ << std::endl;
           bool handle_ok = true;
+          int target_fd = -1;
           // 解析http请求并构建代理
           do {
-            HTTP::Request req;
-            HTTP::read_http_req(w.wait_fd_, req);
+            HTTP::HttpHandler h(w.wait_fd_);
+            ret = h.handle();
             if (ret != 0) {
-              std::cout << "read_http_req error: " << ret << std::endl;
+              std::cout << "handle error, method = " << h.req_.method << std::endl; 
               handle_ok = false;
               break;
             }
-            std::cout << req.to_string() << std::endl;
-
-            auto& mth = req.method;
-            auto& target = req.target;
-            auto pos = target.find(':');
-            if (pos == std::string::npos) {
-              std::cout << "error target: " << target << std::endl;
-              handle_ok = false;
-              break;
-            }
-
-            std::string host(target.substr(0, pos));
-            std::string port(target.substr(pos + 1));
-            // std::cout << "host: " << host << " port: " << port << std::endl;
-            target_fd = IO::CreateConn(host, std::stoi(port));
-            if (ret < 0) {
-              std::cout << "CreateConn error: " << ret << std::endl;
-              handle_ok = false;
-              break;
-            } else {
-              // std::cout << "CreateConn success: " << target_fd << std::endl;
-            }
-
-            // return http 200
-            static const std::string http_200 = "HTTP/1.1 200 Connection Established\r\n\r\n";
-            auto len = IO::SendUntilAll(w.wait_fd_, http_200.c_str(), http_200.size());
-            if (len < 0) {
-              std::cout << "SendUntilAll error: " << len << std::endl;
-              handle_ok = false;
-              break;
-            }
-
+            target_fd = h.target_fd_;
+            assert(target_fd != -1);
+            printf("unordered_map: %d -> %d, size = %d\n", w.wait_fd_, target_fd, w.local2remote_.size());
             w.local2remote_[w.wait_fd_] = target_fd;
             w.remote2local_[target_fd] = w.wait_fd_;
           }while(0);
@@ -187,7 +166,7 @@ namespace ThreadPool {
           }
         }
         
-        w.wait_fd_ = take(); // 拿不拿都行
+        w.wait_fd_ = take();
       }
       
     }
@@ -206,7 +185,7 @@ namespace ThreadPool {
             }
           }
 
-          Func(workers_[i]);
+          Func(w);
 
         });
       }
@@ -222,7 +201,7 @@ namespace ThreadPool {
 
     // 从队列中取出任务
     int take() {
-      std::lock_guard<std::mutex> lock(mutex_);
+      std::lock_guard<std::recursive_mutex> lock(mutex_fds_);
       if (fds_.size() == 0) {
         return -1;
       }
@@ -233,7 +212,7 @@ namespace ThreadPool {
 
     void submit(int connfd) {
       {
-        std::lock_guard<std::mutex> lock(mutex_fds_);
+        std::lock_guard<std::recursive_mutex> lock(mutex_fds_);
         fds_.push_back(connfd);
       }
       cv_fds_.notify_one();
@@ -256,7 +235,7 @@ namespace ThreadPool {
     std::condition_variable cv_;
     
     std::deque<int> fds_;
-    std::mutex mutex_fds_;
-    std::condition_variable cv_fds_;
+    std::recursive_mutex mutex_fds_;
+    std::condition_variable_any cv_fds_;
   };
 }
