@@ -68,10 +68,12 @@ static inline int CreateSocketLink(int& local_fd, int& remote_fd) {
 }
 
 // 主线程，接收控制链接，收到一个就申请一个
-int AcceptFdReq(int fd, const EventLoop::EventLoop& loop) {
+int AcceptFdReq(int fd, EventLoop::EventLoop& loop) {
+    std::cout << "Start to accept fd req" << std::endl;
     int n = 0;
     while (1) {
         n = read(fd, NULL, 1);
+        continue;
         if (n < 0) {
             std::cout << "Failed to read from local proxy" << std::endl;
             return -1;
@@ -79,19 +81,14 @@ int AcceptFdReq(int fd, const EventLoop::EventLoop& loop) {
             std::cout << "Local proxy closed" << std::endl;
             return 0;
         } else {
-            // 申请对本地代理的链接
-            int local_fd = CreateLocalProxySocket();
-            if (local_fd < 0) {
-                std::cout << "Failed to create local proxy socket" << std::endl;
+            int local_fd, remote_fd;
+            int ret = CreateSocketLink(local_fd, remote_fd);
+            if (ret < 0) {
+                std::cout << "Failed to create socket link" << std::endl;
+                // return -1;
                 continue;
             }
-            // 申请对远端的链接
-            int remote_fd = CreateRemoteProxySocket();
-            if (remote_fd < 0) {
-                std::cout << "Failed to create remote socket" << std::endl;
-                continue;
-            }
-            loop.AddSock(new_fd);
+            loop.AddSocketLink(local_fd, remote_fd);
         }
     }
     return 0;
@@ -111,10 +108,10 @@ int main() {
         return -1;
     }
 
-    EventLoop::EventLoop loop(params::N);
-    loop.Start();
+    EventLoop::EventLoop loop(1);
+    loop.spawn();
 
     ret = AcceptFdReq(fd, loop);
     assert(ret != 0);
-
+    
 }

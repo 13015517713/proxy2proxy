@@ -22,4 +22,34 @@ namespace IO {
         return 0;
     }
 
+    int CreateReadableFdSet(fd_set& readfds, fd_set& writefds, int& max_fd, int fd) {
+        FD_ZERO(&readfds);
+        FD_SET(fd, &readfds);
+        FD_SET(fd, &writefds);
+        max_fd = fd;
+        return 0;
+    }
+
+    int Select(fd_set& readfds, const int max_fd, const timeval& timeout) {
+        int ret = select(max_fd + 1, &readfds, nullptr, nullptr, &timeout);
+        if (ret < 0) {
+            return -1;
+        }
+        return 0;
+    }
+
+    int SendUntilAall(int fd, const char *buf, int len) {
+        int ret = 0;
+        int total = 0;
+        while (total < len) {
+            ret = send(fd, buf + total, len - total, 0);
+            if (ret < 0) {
+                return -1;
+            }
+            total += ret;
+        }
+        return total;
+    }
+
+
 } // namespace IO
