@@ -1,3 +1,5 @@
+#include <iostream>
+
 #include "io.h"
 
 namespace IO {
@@ -33,6 +35,7 @@ namespace IO {
     int Select(fd_set& readfds, const int max_fd, const timeval& timeout) {
         int ret = select(max_fd + 1, &readfds, nullptr, nullptr, &timeout);
         if (ret < 0) {
+            std::cout << "Failed to select: " << strerror(errno) << std::endl;
             return -1;
         }
         return 0;
