@@ -152,13 +152,14 @@ namespace ThreadPool {
         for (int i=0; i<num_event; ++i) {
           auto& ev = events[i];
           auto fd = ev.data.fd;
+          auto target_fd = w.local2remote_.count(fd) ? w.local2remote_[fd] : w.remote2local_[fd];
           if (ev.events & EPOLLIN) {
             char buf[256];
             int len = recv(fd, buf, sizeof(buf), MSG_DONTWAIT);
+            // std::cout << "thread " << w.id_ << " recv " << len << " bytes from " << fd << std::endl;
             if (len > 0) {
-              // std::cout << "read " << len << " bytes from " << fd << std::endl;
-              auto target_fd = w.local2remote_.count(fd) ? w.local2remote_[fd] : w.remote2local_[fd];
               int ret = IO::SendUntilAll(target_fd, buf, len);  // 如果对端关闭，这里会返回-1，信号SIGPIPE
+              // std::cout << "thread " << w.id_ << " send " << ret << " bytes to " << target_fd << std::endl;
               if (ret < 0) {
                 shutdown(fd, SHUT_RD);
               }
@@ -166,15 +167,16 @@ namespace ThreadPool {
               if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
                 continue;
               } else {
-                // 这个和下面都正常关闭和删除
-                std::cout << "read error: " << strerror(errno) << std::endl;
+                // std::cout << "read error: " << strerror(errno) << std::endl;
                 shutdown(target_fd, SHUT_WR);
-                if (IO::DelEpoll(epoll_fd, fd)) {
+                shutdown(fd, SHUT_RD);
+                if (IO::DelEpoll(epoll_fd, fd) == 0) {
                   if (w.local2remote_.count(fd)) {
                     w.local2remote_.erase(fd);
                   } else {
                     w.remote2local_.erase(fd);
                   }
+                  // std::cout << "thread " << w.id_ << " close " << fd << std::endl;
                 }
               }
             } else {
@@ -187,6 +189,7 @@ namespace ThreadPool {
                 } else {
                   w.remote2local_.erase(fd);
                 }
+                // std::cout << "thread " << w.id_ << " close " << fd << std::endl;
               }
             }
 

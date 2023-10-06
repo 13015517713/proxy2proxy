@@ -7,7 +7,7 @@
 #include "threadpool.hpp"
 
 namespace params{
-    const int N = 4;  // 线程池大小
+    const int N = 20;  // 线程池大小
     const int PROXY_PORT = 12345;  // 端口号
     const int CONTROL_PORT = 12346;  // 控制端口号
     const int SOCKLINK_PORT = 12347;  // 控制端口号
@@ -48,13 +48,12 @@ int AcceptControlLoop(int fd, int& conn_fd) {
                 continue;
             }
             conn_fd = connfd;
-            std::cout << "Accept " << inet_ntoa(addr.sin_addr) << ":" << ntohs(addr.sin_port) << " fd: " << connfd << std::endl;
+            std::cout << "AcceptControl " << inet_ntoa(addr.sin_addr) << ":" << ntohs(addr.sin_port) << " fd: " << connfd << std::endl;
             return 0;
         } else {
             if ((errno == EAGAIN) || (errno == EINTR) || (errno == EWOULDBLOCK)) {
                 continue;
             }
-            std::cout << "Accept error but ignore." << std::endl;
             return -1;
         }
     }while(1);
@@ -85,7 +84,7 @@ int AcceptSocklinkLoop(int fd, ThreadPool::ThreadPool& tp) {
 
 int main() {
     signal(SIGPIPE, SIG_IGN);
-
+ 
     int accept_fd = IO::CreateTcpSocket(params::IP, params::PROXY_PORT, true);
     if (accept_fd < 0) {
         std::cout << "CreateTcpSocket failed" << std::endl;
@@ -114,7 +113,6 @@ int main() {
         std::cout << "AcceptControlLoop failed" << std::endl;
         return -1;
     }
-    std::cout << "AcceptControlLoop success" << std::endl;
 
     ThreadPool::ThreadPool tp(params::N);
     tp.control_fd_ = control_conn_fd;
