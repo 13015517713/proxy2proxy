@@ -6,7 +6,7 @@
 #include "io.h"
 #include "threadpool.hpp"
 namespace params{
-    const int N = 1;  // 线程池大小
+    const int N = 4;  // 线程池大小
     const char *LOCAL_IP = "127.0.0.1";
     const int LOCAL_PROXY_PORT = 7890;  // 端口号
     const char *REMOTE_IP = "172.24.0.100";
@@ -23,6 +23,7 @@ static int init() {
     }
     return 0;
 }
+
 static inline int CreateRemoteProxySocket() {
     int fd = IO::CreateSocket();
     if (fd < 0) {
@@ -31,7 +32,7 @@ static inline int CreateRemoteProxySocket() {
     }
     int ret = IO::Connect(fd, params::REMOTE_IP, params::REMOTE_PROXY_IP);
     if (ret < 0) {
-        std::cout << "Failed to connect to remote control" << std::endl;
+        std::cout << "Failed to connect to remote control, " << strerror(errno) << std::endl;
         return -1;
     }
     return fd;
@@ -64,6 +65,20 @@ static inline int CreateSocketLink(int& local_fd, int& remote_fd) {
         std::cout << "Failed to create remote socket" << std::endl;
         return -1;
     }
+    return 0;
+}
+
+int InitSockLink(EventLoop::EventLoop& loop) {
+    int local_fd, remote_fd;
+    for (int i = 0; i < 48; ++i) {
+        int ret = CreateSocketLink(local_fd, remote_fd);
+        if (ret < 0) {
+            std::cout << "Failed to create socket link" << std::endl;
+            return -1;
+        }
+        loop.AddSocketLink(local_fd, remote_fd);
+    }
+    std::cout << "create socket link pool success" << std::endl;
     return 0;
 }
 
@@ -116,8 +131,10 @@ int main() {
     loop.spawn();
 
     // 可以预先申请pre_N个socket link
+    ret = InitSockLink(loop);
+    assert(ret == 0);
     ret = AcceptFdReq(fd, loop);
-    assert(ret != 0);
+    assert(ret == 0);
     
     WSACleanup();
 

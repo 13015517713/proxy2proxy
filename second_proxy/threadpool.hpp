@@ -6,11 +6,9 @@
 #include <unordered_map>
 #include <condition_variable>
 #include <winsock2.h>
+#include <unistd.h>
 
 #include "io.h"
-extern "C" {
-    #include "wepoll.h"
-}
 
 namespace EventLoop {
 
@@ -28,10 +26,13 @@ namespace EventLoop {
         EventLoop(const int thread_len): thread_len_(thread_len), threads_{thread_len}, workers_(thread_len) {}
         
         void Func(Worker& w) {
-            // 抢到socket link
-            int max_fd = 0;
-            fd_set readfds;
-            FD_ZERO(&readfds);
+            // wepoll create fd
+            HANDLE epoll_fd = IO::EpollCreate();
+            if (epoll_fd == nullptr) {
+                std::cout << w.id_ << " Failed to create epoll fd" << std::endl;
+                return;
+            }
+
             int local_fd, remote_fd;
             int ret = 0;
 
@@ -42,62 +43,113 @@ namespace EventLoop {
                         cv_socket_links_.wait(lock, [&](){ return usable_socket_links_.size() > 0; });
                         ret = take(local_fd, remote_fd);
                     }
+
                     if (ret < 0) {
                         continue;
                     }
-                    w.local2remote_[local_fd] = remote_fd;
-                    w.remote2local_[remote_fd] = local_fd;
-                    FD_SET(local_fd, &readfds);
-                    FD_SET(remote_fd, &readfds);
-                    max_fd = std::max(local_fd, remote_fd);
+                    
+                    if (IO::SetNonBlocking(local_fd) < 0 || IO::SetNonBlocking(remote_fd) < 0) {
+                        close(local_fd);
+                        close(remote_fd);
+                        std::cout << "Failed to set nonblocking" << std::endl;
+                        continue;
+                    }
+                    
+                    auto add_ok = false;
+                    if (IO::AddEpoll(epoll_fd, local_fd) == 0) {
+                        if (IO::AddEpoll(epoll_fd, remote_fd) == 0) {
+                            w.local2remote_[local_fd] = remote_fd;
+                            w.remote2local_[remote_fd] = local_fd;
+                            add_ok = true;
+                        } else {
+                            IO::DelEpoll(epoll_fd, local_fd);
+                        }
+                    }
+                    if (!add_ok) {
+                        close(local_fd);
+                        close(remote_fd);
+                        std::cout << "Failed to add epoll" << std::endl;
+                        continue;
+                    }
                     std::cout << "thread " << w.id_ << " get socket link " << local_fd << " " << remote_fd << std::endl;
                 }
                 
-                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-
-                int ret = IO::Select(readfds, max_fd, {3,0});
-                if (ret < 0) {
-                    std::cout << "Failed to select" << std::endl;
+                // std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                const int max_events = 10;
+                epoll_event events[max_events];
+                auto num_events = IO::EpollWait(epoll_fd, events, max_events, 0);
+                if (num_events < 0) {
+                    std::cout << "Epoll wait error." << std::endl;
                     continue;
                 }
 
-                // 读写
-                std::cout << "thread " << w.id_ << " select success" << std::endl;
-                char buf[256];
-                for (int fd = 0; fd <= max_fd; ++fd) {
-                    if (FD_ISSET(fd, &readfds)) {
-                        ret = recv(fd, buf, sizeof(buf), 0);
-                        std::cout << "thread " << w.id_ << " recv " << ret << " bytes from " << fd << std::endl;
-                        auto target_fd = w.local2remote_.count(fd) ? w.local2remote_[fd] : w.remote2local_[fd];
-                        if (ret > 0) {
-                            ret = IO::SendUntilAall(target_fd, buf, ret);
-                            std::cout << "thread " << w.id_ << " send " << ret << " bytes to " << target_fd << std::endl;
+                for (int i=0; i<num_events; ++i) {
+                    auto& ev = events[i];
+                    auto fd = ev.data.fd;
+                    auto target_fd = w.local2remote_.count(fd) ? w.local2remote_[fd] : w.remote2local_[fd];
+                    if (ev.events & EPOLLIN) {
+                        char buf[1024];
+                        int len = recv(fd, buf, sizeof(buf), 0); // 非阻塞
+                        // std::cout << "thread " << w.id_ << " recv " << len << " bytes from " << fd << std::endl;
+                        if (len > 0) {
+                            int ret = IO::SendUntilAll(target_fd, buf, len);  // 如果对端关闭，这里会返回-1，信号SIGPIPE
+                            // std::cout << "thread " << w.id_ << " send " << ret << " bytes to " << target_fd << std::endl;
                             if (ret < 0) {
                                 shutdown(fd, SD_RECEIVE);
                             }
-                        } else if (ret <= 0) { 
-                            shutdown(target_fd, SD_SEND);
-                            FD_CLR(fd, &readfds);
-                            if (w.local2remote_.count(fd)) {
-                                w.local2remote_.erase(fd);
+                        } else if (len < 0) {
+                            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                                continue;
                             } else {
-                                w.remote2local_.erase(fd);
+                                // std::cout << "read error: " << strerror(errno) << std::endl;
+                                shutdown(target_fd, SD_SEND);
+                                shutdown(fd, SD_RECEIVE);
+                                if (IO::DelEpoll(epoll_fd, fd) == 0) {
+                                    if (w.local2remote_.count(fd)) {
+                                        w.local2remote_.erase(fd);
+                                    } else {
+                                        w.remote2local_.erase(fd);
+                                    }
+                                    // std::cout << "thread " << w.id_ << " close " << fd << std::endl;
+                                }
+                            }
+                        } else {
+                            // len = 0
+                            shutdown(fd, SD_RECEIVE);
+                            shutdown(target_fd, SD_SEND);
+                            if (IO::DelEpoll(epoll_fd, fd) == 0) {
+                                if (w.local2remote_.count(fd)) {
+                                    w.local2remote_.erase(fd);
+                                } else {
+                                    w.remote2local_.erase(fd);
+                                }
+                                // std::cout << "thread " << w.id_ << " close " << fd << std::endl;
                             }
                         }
+
                     }
                 }
-                
+
                 ret = take(local_fd, remote_fd);
                 if (ret < 0) {
                     continue;
                 }
 
-                // 拿到之后处理下
-                w.local2remote_[local_fd] = remote_fd;
-                w.remote2local_[remote_fd] = local_fd;
-                FD_SET(local_fd, &readfds);
-                FD_SET(remote_fd, &readfds);
-                max_fd = std::max(local_fd, remote_fd);
+                auto add_ok = false;
+                if (IO::AddEpoll(epoll_fd, local_fd) == 0) {
+                    if (IO::AddEpoll(epoll_fd, remote_fd) == 0) {
+                        w.local2remote_[local_fd] = remote_fd;
+                        w.remote2local_[remote_fd] = local_fd;
+                        add_ok = true;
+                    } else {
+                        IO::DelEpoll(epoll_fd, local_fd);
+                    }
+                }
+                if (!add_ok) {
+                    close(local_fd);
+                    close(remote_fd);
+                    std::cout << "Failed to add epoll" << std::endl;
+                }
             }
 
         }
@@ -109,6 +161,7 @@ namespace EventLoop {
                 workers_[i].id_ = i;
                 auto &w = workers_[i];
                 threads_[i] = std::thread([&] () {
+                    w.thread_ = &threads_[i];
                     {
                         std::unique_lock<std::mutex> lock(mutex_);
                         if (++n == thread_len_) {
