@@ -1,6 +1,7 @@
 #pragma once
 
 #include <netinet/in.h>
+#include <sys/epoll.h>
 
 namespace IO {
     // 创建socket: 非阻塞
@@ -21,7 +22,7 @@ namespace IO {
 
     int DelEpoll(int epoll_fd, int fd);
 
-    int EpollWait(int epoll_fd, struct epoll_event *events, int max_events, int timeout);
+    int EpollWait(int epoll_fd, epoll_event *events, int max_events, int timeout);
 
     int SendUntilAll(int fd, const char *buf, int len);
 }

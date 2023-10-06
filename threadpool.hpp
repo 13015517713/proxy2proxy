@@ -13,6 +13,8 @@
 #include <unordered_map>
 #include <unistd.h>
 #include <assert.h>
+#include <signal.h>
+#include <string.h>
 
 #include "http.h"
 #include "io.h"
@@ -31,7 +33,7 @@ namespace ThreadPool {
       // 等待链接的socket
       int wait_fd_;
       // socket映射
-      std::unordered_map<int, int> local2remote_; // 为啥会出问题？
+      std::unordered_map<int, int> local2remote_;
       std::unordered_map<int, int> remote2local_;
     };
 
@@ -74,20 +76,46 @@ namespace ThreadPool {
           std::cout << "thread " << w.id_ << " handle " << w.wait_fd_ << std::endl;
           bool handle_ok = true;
           int target_fd = -1;
+
           // 解析http请求并构建代理
+          // do {
+          //   HTTP::HttpHandler h(w.wait_fd_);
+          //   ret = h.handle();
+          //   if (ret != 0) {
+          //     std::cout << "handle error, method = " << h.req_.method << std::endl; 
+          //     handle_ok = false;
+          //     break;
+          //   }
+          //   target_fd = h.target_fd_;
+          //   assert(target_fd != -1);
+          //   w.local2remote_[w.wait_fd_] = target_fd;
+          //   w.remote2local_[target_fd] = w.wait_fd_;
+          // }while(0);
+
+          // 只构建代理
           do {
-            HTTP::HttpHandler h(w.wait_fd_);
-            ret = h.handle();
-            if (ret != 0) {
-              std::cout << "handle error, method = " << h.req_.method << std::endl; 
-              handle_ok = false;
+            auto has_send = false;
+            ret = take_socket_link();
+            while (ret == -1) {
+              if (!has_send) {
+                auto ret = send_need_link(w.wait_fd_);
+                if (ret != 0) {
+                  handle_ok = false;
+                  break;
+                }
+                has_send = true;
+                std::this_thread::yield();
+              }
+              // 尝试多了还是没有，前面几次让出线程，后面直接断开
+              ret = take_socket_link();
+            }
+            if (!handle_ok) {
               break;
             }
-            target_fd = h.target_fd_;
-            assert(target_fd != -1);
+            target_fd = ret;
             w.local2remote_[w.wait_fd_] = target_fd;
             w.remote2local_[target_fd] = w.wait_fd_;
-          }while(0);
+          } while(0);
 
           if (!handle_ok) {
             close(w.wait_fd_);
@@ -175,7 +203,8 @@ namespace ThreadPool {
       int32_t n = 0;
       for (int i = 0; i < thread_len_; ++i) {
         workers_[i].id_ = i;
-        threads_[i] = std::thread([&, &w=workers_[i]] () {
+        auto &w = workers_[i];
+        threads_[i] = std::thread([&] () {
           w.thread_ = &threads_[w.id_];
           {
             std::unique_lock<std::mutex> lock(mutex_);
@@ -217,8 +246,35 @@ namespace ThreadPool {
       cv_fds_.notify_one();
     }
 
+    int take_socket_link() {
+      std::lock_guard<std::mutex> lock(mutex_link_fds_);
+      if (link_fds_.size() == 0) {
+        return -1;
+      }
+      int fd = link_fds_.front();
+      link_fds_.pop_front();
+      return fd;
+    }
+
     void submit_socket_link(int fd) {
+      std::lock_guard<std::mutex> lock(mutex_link_fds_);
       link_fds_.push_back(fd);
+    }
+
+    int send_need_link(int fd) {
+      const static char ch = '0';
+      while (1) {
+        auto n = send(control_fd_, &ch, 1, MSG_DONTWAIT);
+        if (n <= 0) {
+          if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+            continue;
+          }
+          std::cout << "send error: " << strerror(errno) << std::endl;
+          return -1;
+        } else {
+          return 0;
+        }
+      }
     }
 
     ~ThreadPool () {
@@ -226,6 +282,8 @@ namespace ThreadPool {
         threads_[i].join();
       }
     }
+
+    int control_fd_;
 
     private:
     
@@ -237,9 +295,11 @@ namespace ThreadPool {
     std::mutex mutex_;
     std::condition_variable cv_;
     
-    std::deque<int> link_fds_;
     std::deque<int> fds_;
     std::recursive_mutex mutex_fds_;
     std::condition_variable_any cv_fds_;
+
+    std::deque<int> link_fds_;
+    std::mutex mutex_link_fds_;
   };
 }
