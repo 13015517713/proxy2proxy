@@ -8,6 +8,9 @@
 #include <winsock2.h>
 
 #include "io.h"
+extern "C" {
+    #include "wepoll.h"
+}
 
 namespace EventLoop {
 
@@ -33,11 +36,12 @@ namespace EventLoop {
             int ret = 0;
 
             while (1) {
-                std::cout << "local2remote size: " << w.local2remote_.size() << std::endl;
                 if (w.local2remote_.empty()) {
-                    std::unique_lock<std::recursive_mutex> lock(mutex_socket_links_);
-                    cv_socket_links_.wait(lock, [&](){ return usable_socket_links_.size() > 0; });
-                    ret = take(local_fd, remote_fd);
+                    {
+                        std::unique_lock<std::recursive_mutex> lock(mutex_socket_links_);
+                        cv_socket_links_.wait(lock, [&](){ return usable_socket_links_.size() > 0; });
+                        ret = take(local_fd, remote_fd);
+                    }
                     if (ret < 0) {
                         continue;
                     }
@@ -46,22 +50,28 @@ namespace EventLoop {
                     FD_SET(local_fd, &readfds);
                     FD_SET(remote_fd, &readfds);
                     max_fd = std::max(local_fd, remote_fd);
+                    std::cout << "thread " << w.id_ << " get socket link " << local_fd << " " << remote_fd << std::endl;
                 }
                 
-                int ret = IO::Select(readfds, max_fd, {0,0});
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+                int ret = IO::Select(readfds, max_fd, {3,0});
                 if (ret < 0) {
                     std::cout << "Failed to select" << std::endl;
                     continue;
                 }
 
                 // 读写
+                std::cout << "thread " << w.id_ << " select success" << std::endl;
+                char buf[256];
                 for (int fd = 0; fd <= max_fd; ++fd) {
                     if (FD_ISSET(fd, &readfds)) {
-                        char buf[256];
                         ret = recv(fd, buf, sizeof(buf), 0);
+                        std::cout << "thread " << w.id_ << " recv " << ret << " bytes from " << fd << std::endl;
                         auto target_fd = w.local2remote_.count(fd) ? w.local2remote_[fd] : w.remote2local_[fd];
                         if (ret > 0) {
                             ret = IO::SendUntilAall(target_fd, buf, ret);
+                            std::cout << "thread " << w.id_ << " send " << ret << " bytes to " << target_fd << std::endl;
                             if (ret < 0) {
                                 shutdown(fd, SD_RECEIVE);
                             }
@@ -81,8 +91,13 @@ namespace EventLoop {
                 if (ret < 0) {
                     continue;
                 }
+
+                // 拿到之后处理下
                 w.local2remote_[local_fd] = remote_fd;
                 w.remote2local_[remote_fd] = local_fd;
+                FD_SET(local_fd, &readfds);
+                FD_SET(remote_fd, &readfds);
+                max_fd = std::max(local_fd, remote_fd);
             }
 
         }
@@ -92,7 +107,7 @@ namespace EventLoop {
             int32_t n = 0;
             for (int i = 0; i < thread_len_; ++i) {
                 workers_[i].id_ = i;
-                auto &w = workers_[i]; // 为了在类外被捕获
+                auto &w = workers_[i];
                 threads_[i] = std::thread([&] () {
                     {
                         std::unique_lock<std::mutex> lock(mutex_);
@@ -122,12 +137,12 @@ namespace EventLoop {
             }
             std::pair<int, int> socket_link = usable_socket_links_.front();
             usable_socket_links_.pop_front();
-            local_fd, remote_fd = socket_link.first, socket_link.second;
+            local_fd = socket_link.first;
+            remote_fd = socket_link.second;
             return 0;
         }
 
         void AddSocketLink(int local_fd, int remote_fd) {
-            std::cout << "add socket link" << std::endl;
             {
                 std::lock_guard<std::recursive_mutex> lock(mutex_socket_links_);
                 usable_socket_links_.push_back(std::make_pair(local_fd, remote_fd));

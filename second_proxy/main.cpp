@@ -5,13 +5,13 @@
 
 #include "io.h"
 #include "threadpool.hpp"
-
 namespace params{
-    const int N = 4;  // 线程池大小
-    const int LOCAL_PROXY_PORT = 7890;  // 端口号
+    const int N = 1;  // 线程池大小
     const char *LOCAL_IP = "127.0.0.1";
+    const int LOCAL_PROXY_PORT = 7890;  // 端口号
+    const char *REMOTE_IP = "172.24.0.100";
     const int REMOTE_CONTROL_PORT = 12346;  // 控制端口号
-    const char *REMOTE_CONTROL_IP = "0.0.0.0";
+    const int REMOTE_PROXY_IP = 12347; // 代理端口号
 }
 
 // 初始化Winsock库
@@ -23,14 +23,13 @@ static int init() {
     }
     return 0;
 }
-
-static inline int CreateLocalProxySocket() {
+static inline int CreateRemoteProxySocket() {
     int fd = IO::CreateSocket();
     if (fd < 0) {
         std::cout << "Failed to create socket" << std::endl;
         return -1;
     }
-    int ret = IO::Connect(fd, params::REMOTE_CONTROL_IP, params::REMOTE_CONTROL_PORT);
+    int ret = IO::Connect(fd, params::REMOTE_IP, params::REMOTE_PROXY_IP);
     if (ret < 0) {
         std::cout << "Failed to connect to remote control" << std::endl;
         return -1;
@@ -38,7 +37,8 @@ static inline int CreateLocalProxySocket() {
     return fd;
 }
 
-static inline int CreateRemoteProxySocket() {
+
+static inline int CreateLocalProxySocket() {
     int fd = IO::CreateSocket();
     if (fd < 0) {
         std::cout << "Failed to create socket" << std::endl;
@@ -71,14 +71,16 @@ static inline int CreateSocketLink(int& local_fd, int& remote_fd) {
 int AcceptFdReq(int fd, EventLoop::EventLoop& loop) {
     std::cout << "Start to accept fd req" << std::endl;
     int n = 0;
+    char tmp;
     while (1) {
-        n = read(fd, NULL, 1);
-        continue;
+        n = recv(fd, &tmp, 1, 0);
         if (n < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;
+            }
             std::cout << "Failed to read from local proxy" << std::endl;
             return -1;
         } else if (n == 0) {
-            std::cout << "Local proxy closed" << std::endl;
             return 0;
         } else {
             int local_fd, remote_fd;
@@ -88,6 +90,7 @@ int AcceptFdReq(int fd, EventLoop::EventLoop& loop) {
                 // return -1;
                 continue;
             }
+            std::cout << "Create socket link " << local_fd << " " << remote_fd << std::endl;
             loop.AddSocketLink(local_fd, remote_fd);
         }
     }
@@ -102,16 +105,20 @@ int main() {
         std::cout << "Failed to create socket" << std::endl;
         return -1;
     }
-    int ret = IO::Connect(fd, params::LOCAL_IP, params::LOCAL_PROXY_PORT);
+    int ret = IO::Connect(fd, params::REMOTE_IP, params::REMOTE_CONTROL_PORT);
     if (ret < 0) {
         std::cout << "Failed to connect to local proxy" << std::endl;
         return -1;
     }
+    std::cout << "Connect to remote control success." << std::endl;
 
-    EventLoop::EventLoop loop(1);
+    EventLoop::EventLoop loop(params::N);
     loop.spawn();
 
+    // 可以预先申请pre_N个socket link
     ret = AcceptFdReq(fd, loop);
     assert(ret != 0);
     
+    WSACleanup();
+
 }
