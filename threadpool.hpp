@@ -31,7 +31,8 @@ namespace ThreadPool {
       int id_;
       std::thread* thread_;
       // 等待链接的socket
-      int wait_fd_;
+      // int wait_fd_;
+      std::deque<int> wait_fds_; // feat: 优化，等待链接的socket，可以有多个
       // socket映射
       std::unordered_map<int, int> local2remote_;
       std::unordered_map<int, int> remote2local_;
@@ -39,14 +40,39 @@ namespace ThreadPool {
 
     public:
 
-    ThreadPool(int n): thread_len_(n), workers_{n}, threads_{n} {
-      // for (auto &w : workers_) {
-      //   {
-      //     std::cout << "max_bucket_count: " << w.local2remote_.max_bucket_count() << std::endl;
-      //     std::cout << "bucket_count_: " << w.local2remote_.bucket_count() << std::endl;
-      //     std::cout << "max_size: " << w.local2remote_.max_size() << std::endl;
-      //   }
-      // }
+    ThreadPool(int n): thread_len_(n), workers_{n}, threads_{n} {}
+
+    int AddSocketLink(Worker &w, int epollfd, int fd) {
+
+      int ret = take_socket_link();
+      if (ret < 0) {
+        return -2;
+      }
+
+      auto target_fd = ret;
+      auto add_ok = false;
+      
+      do {
+        ret = IO::AddEpoll(epollfd, fd);
+        if (ret != 0) {
+          break;
+        }
+        ret = IO::AddEpoll(epollfd, target_fd);
+        if (ret != 0) {
+          IO::DelEpoll(epollfd, fd);
+          break;
+        }
+        w.local2remote_[fd] = target_fd;
+        w.remote2local_[target_fd] = fd;
+        add_ok = true;
+      }while(0);
+      
+      if (!add_ok) {
+         close(target_fd);
+         return -1;
+      }
+
+      return 0;
     }
 
     void Func(Worker& w) {
@@ -60,88 +86,34 @@ namespace ThreadPool {
       }
       
       int ret = 0;
-      w.wait_fd_ = -1;
       int target_fd = -1;
 
       int fd;
       while (1) { 
-        if (w.local2remote_.empty() && w.wait_fd_ == -1){
+        if (w.local2remote_.empty() && w.wait_fds_.empty()){
           std::unique_lock<std::recursive_mutex> lock(mutex_fds_);
           cv_fds_.wait(lock, [&](){ return fds_.size() > 0; });
-          fd = take();
-          w.wait_fd_ = fd;
         }
 
-        if (w.wait_fd_ != -1) {
-          std::cout << "thread " << w.id_ << " handle " << w.wait_fd_ << std::endl;
-          bool handle_ok = true;
-          int target_fd = -1;
-
-          // 解析http请求并构建代理
-          // do {
-          //   HTTP::HttpHandler h(w.wait_fd_);
-          //   ret = h.handle();
-          //   if (ret != 0) {
-          //     std::cout << "handle error, method = " << h.req_.method << std::endl; 
-          //     handle_ok = false;
-          //     break;
-          //   }
-          //   target_fd = h.target_fd_;
-          //   assert(target_fd != -1);
-          //   w.local2remote_[w.wait_fd_] = target_fd;
-          //   w.remote2local_[target_fd] = w.wait_fd_;
-          // }while(0);
-
-          // 只构建代理
-          do {
-            auto has_send = false;
-            ret = take_socket_link();
-            while (ret == -1) {
-              if (!has_send) {
-                auto ret = send_need_link(w.wait_fd_);
-                if (ret != 0) {
-                  handle_ok = false;
-                  break;
-                }
-                has_send = true;
-                std::this_thread::yield();
-              }
-              // 尝试多了还是没有，前面几次让出线程，后面直接断开
-              ret = take_socket_link();
-            }
-            if (!handle_ok) {
+        if (!w.wait_fds_.empty()) {
+          while (1) {
+            if (w.wait_fds_.empty()) break;
+            fd = w.wait_fds_.front();
+            ret = AddSocketLink(w, epoll_fd, fd);
+            if (ret == 0) {
+              // add 成功
+              w.wait_fds_.pop_front();
+            } else if (ret == -2){
               break;
+            } else if (ret == -1) {
+              close(fd);
+              w.wait_fds_.pop_front();
             }
-            target_fd = ret;
-            w.local2remote_[w.wait_fd_] = target_fd;
-            w.remote2local_[target_fd] = w.wait_fd_;
-          } while(0);
-
-          if (!handle_ok) {
-            close(w.wait_fd_);
-          } else {
-            // add epoll
-            if (IO::AddEpoll(epoll_fd, w.wait_fd_) == 0) {
-              if (IO::AddEpoll(epoll_fd, target_fd) == 0) {
-                goto add_epoll_ok;
-              } else {
-                IO::DelEpoll(epoll_fd, w.wait_fd_);
-              }
-            }
-            // std::cout << "AddEpoll error" << std::endl;
-            close(w.wait_fd_);
-            close(target_fd);
-            w.local2remote_.erase(w.wait_fd_);
-            w.remote2local_.erase(target_fd);
-
-            add_epoll_ok:;
           }
-
-          w.wait_fd_ = -1;
         }
 
         // epoll wait
-        const int MAX_EVENTS = 10;
+        const int MAX_EVENTS = 256;
         epoll_event events[MAX_EVENTS];
         auto num_event = IO::EpollWait(epoll_fd, events, MAX_EVENTS, 0);
         if (num_event < 0) {
@@ -149,16 +121,16 @@ namespace ThreadPool {
           continue;
         }
 
+        static thread_local char buf[1024];  // 这样会不会效果提升 ? 
         for (int i=0; i<num_event; ++i) {
           auto& ev = events[i];
           auto fd = ev.data.fd;
           auto target_fd = w.local2remote_.count(fd) ? w.local2remote_[fd] : w.remote2local_[fd];
           if (ev.events & EPOLLIN) {
-            char buf[256];
             int len = recv(fd, buf, sizeof(buf), MSG_DONTWAIT);
             // std::cout << "thread " << w.id_ << " recv " << len << " bytes from " << fd << std::endl;
             if (len > 0) {
-              int ret = IO::SendUntilAll(target_fd, buf, len);  // 如果对端关闭，这里会返回-1，信号SIGPIPE
+              int ret = IO::SendUntilAll(target_fd, buf, len);
               // std::cout << "thread " << w.id_ << " send " << ret << " bytes to " << target_fd << std::endl;
               if (ret < 0) {
                 shutdown(fd, SHUT_RD);
@@ -196,9 +168,13 @@ namespace ThreadPool {
           }
         }
         
-        w.wait_fd_ = take();
+        uint16_t push_size = push_some(w);
+        ret = IO::SendUntilAll(control_fd_, (char*)&push_size, sizeof(push_size));
+        if (ret < 0) {
+          exit(-1); // 没法申请了，直接退出
+        }
       }
-      
+
     }
 
     // spawn, 初始化N个线程
@@ -241,6 +217,18 @@ namespace ThreadPool {
       return fd;
     }
 
+    // 拿出部分
+    uint16_t push_some(Worker& w) {
+      std::lock_guard<std::recursive_mutex> lock(mutex_fds_);
+      auto push_size = std::max(int(fds_.size() / thread_len_), 10);
+      push_size = std::min(push_size, (int)fds_.size());
+      for (int i = 0; i < push_size; ++i) {
+        w.wait_fds_.push_back(fds_.front());
+        fds_.pop_front();
+      }
+      return static_cast<uint16_t>(push_size);
+    }
+
     void submit(int fd) {
       {
         std::lock_guard<std::recursive_mutex> lock(mutex_fds_);
@@ -262,22 +250,6 @@ namespace ThreadPool {
     void submit_socket_link(int fd) {
       std::lock_guard<std::mutex> lock(mutex_link_fds_);
       link_fds_.push_back(fd);
-    }
-
-    int send_need_link(int fd) {
-      const static char ch = '0';
-      while (1) {
-        auto n = send(control_fd_, &ch, 1, MSG_DONTWAIT);
-        if (n <= 0) {
-          if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
-            continue;
-          }
-          std::cout << "send error: " << strerror(errno) << std::endl;
-          return -1;
-        } else {
-          return 0;
-        }
-      }
     }
 
     ~ThreadPool () {
