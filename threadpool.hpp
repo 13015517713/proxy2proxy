@@ -123,13 +123,13 @@ namespace ThreadPool {
         // epoll wait
         const int MAX_EVENTS = 256;
         epoll_event events[MAX_EVENTS];
-        auto num_event = IO::EpollWait(epoll_fd, events, MAX_EVENTS, 10);
+        auto num_event = IO::EpollWait(epoll_fd, events, MAX_EVENTS, 0);
         if (num_event < 0) {
           std::cout << "EpollWait error" << std::endl;
           continue;
         }
 
-        char buf[1024];
+        char buf[10240];
         for (int i=0; i<num_event; ++i) {
           auto& ev = events[i];
           auto fd = ev.data.fd;
