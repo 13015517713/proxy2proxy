@@ -40,7 +40,7 @@ namespace ThreadPool {
 
     public:
 
-    ThreadPool(int n): thread_len_(n), workers_{n}, threads_{n} {}
+    ThreadPool(int n): thread_len_{n}, workers_{n}, threads_{n}, wait_thread_cnt_{0}, hunger_thread_cnt_{0} {}
 
     int AddSocketLink(Worker &w, int epollfd, int fd) {
 
@@ -92,7 +92,13 @@ namespace ThreadPool {
       while (1) { 
         if (w.local2remote_.empty() && w.wait_fds_.empty()){
           std::unique_lock<std::recursive_mutex> lock(mutex_fds_);
+          std::cout << "thread " << w.id_ << " start to wait" << std::endl;
+          // wait_thread_cnt_++;
+          hunger_thread_cnt_++;
           cv_fds_.wait(lock, [&](){ return fds_.size() > 0; });
+          // wait_thread_cnt_--;
+          std::cout << "thread " << w.id_ << " wake up" << std::endl;
+          // std::this_thread::sleep_for(std::chrono::milliseconds(10000)); // 为了防止饥饿
         }
 
         if (!w.wait_fds_.empty()) {
@@ -103,7 +109,9 @@ namespace ThreadPool {
             if (ret == 0) {
               // add 成功
               w.wait_fds_.pop_front();
+              std::cout << "thread " << w.id_ << " add " << fd << " success" << std::endl;
             } else if (ret == -2){
+              std::cout << "thread " << w.id_ << " add " << fd << " fail, no socket link" << std::endl;  // 经常出现此问题
               break;
             } else if (ret == -1) {
               close(fd);
@@ -115,13 +123,13 @@ namespace ThreadPool {
         // epoll wait
         const int MAX_EVENTS = 256;
         epoll_event events[MAX_EVENTS];
-        auto num_event = IO::EpollWait(epoll_fd, events, MAX_EVENTS, 0);
+        auto num_event = IO::EpollWait(epoll_fd, events, MAX_EVENTS, 10);
         if (num_event < 0) {
           std::cout << "EpollWait error" << std::endl;
           continue;
         }
 
-        static thread_local char buf[1024];  // 这样会不会效果提升 ? 
+        char buf[1024];
         for (int i=0; i<num_event; ++i) {
           auto& ev = events[i];
           auto fd = ev.data.fd;
@@ -168,10 +176,24 @@ namespace ThreadPool {
           }
         }
         
-        uint16_t push_size = push_some(w);
-        ret = IO::SendUntilAll(control_fd_, (char*)&push_size, sizeof(push_size));
-        if (ret < 0) {
-          exit(-1); // 没法申请了，直接退出
+        uint8_t cur_hunger_thread_cnt = hunger_thread_cnt_;
+        if (!w.local2remote_.empty() && cur_hunger_thread_cnt > 0) { // 非空且有人饥饿
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+
+        if (w.local2remote_.empty() || cur_hunger_thread_cnt == 0) {
+          uint16_t push_size = push_some(w);
+          std::string bytes = std::string(push_size, '0');
+          ret = IO::SendUntilAll(control_fd_, bytes.c_str(), bytes.size()); // 一个链接一个字节
+          if (ret < 0) {
+            exit(-1); // 没法申请了，直接退出
+          }
+          if (push_size) {
+            std::cout << "thread " << w.id_ << " push " << push_size << " fds to control" << std::endl;
+            if (cur_hunger_thread_cnt) {
+              hunger_thread_cnt_--;
+            }
+          }
         }
       }
 
@@ -215,6 +237,11 @@ namespace ThreadPool {
       int fd = fds_.front();
       fds_.pop_front();
       return fd;
+    }
+
+    int req_size() {
+      std::lock_guard<std::recursive_mutex> lock(mutex_fds_);
+      return fds_.size();
     }
 
     // 拿出部分
@@ -265,6 +292,8 @@ namespace ThreadPool {
     int thread_len_;
     std::vector<Worker> workers_;
     std::vector<std::thread> threads_;
+    std::atomic_uint8_t wait_thread_cnt_; // for wait all thread init
+    std::atomic_uint8_t hunger_thread_cnt_; // for wait all thread hung
     
     // for create thread
     std::mutex mutex_;

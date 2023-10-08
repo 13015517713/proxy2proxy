@@ -32,7 +32,7 @@ static int AcceptLoop(int fd, ThreadPool::ThreadPool& tp) {
                 continue;
             }
             std::cout << "Accept error but ignore." << std::endl;
-            continue; // 暂时忽略问题
+            exit(-1);
         }
     }
     return 0;
@@ -63,6 +63,7 @@ static int AcceptControlLoop(int fd, int& conn_fd) {
 }
 
 static int AcceptSocklinkLoop(int fd, ThreadPool::ThreadPool& tp) {
+    int cnt = 0;
     struct sockaddr_in addr;
     while (true) {
         int connfd = IO::Accept(fd, NULL);
@@ -72,6 +73,7 @@ static int AcceptSocklinkLoop(int fd, ThreadPool::ThreadPool& tp) {
                 continue;
             }
             // 放到全局队列可用队列里
+            std::cout << "AcceptSocklink fd: " << connfd << " cnt: " << cnt << std::endl;
             tp.submit_socket_link(connfd);
         } else {
             if ((errno == EAGAIN) || (errno == EINTR) || (errno == EWOULDBLOCK)) {
