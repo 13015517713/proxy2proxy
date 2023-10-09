@@ -129,7 +129,7 @@ namespace ThreadPool {
           continue;
         }
 
-        char buf[10240];
+        char buf[256];
         for (int i=0; i<num_event; ++i) {
           auto& ev = events[i];
           auto fd = ev.data.fd;
@@ -186,6 +186,7 @@ namespace ThreadPool {
           std::string bytes = std::string(push_size, '0');
           ret = IO::SendUntilAll(control_fd_, bytes.c_str(), bytes.size()); // 一个链接一个字节
           if (ret < 0) {
+            std::cout << "thread " << w.id_ << " send to control error: " << strerror(errno) << std::endl;
             exit(-1); // 没法申请了，直接退出
           }
           if (push_size) {
