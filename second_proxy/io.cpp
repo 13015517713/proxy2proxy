@@ -50,12 +50,31 @@ namespace IO {
         return 0;
     }
 
+    int RecvUntilAll(int fd, char *buf, int len) {
+        int ret = 0;
+        int total = 0;
+        while (total < len) {
+            ret = recv(fd, buf + total, len - total, 0);
+            if (ret < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                    continue;
+                }
+                return -1;
+            }
+            total += ret;
+        }
+        return total;
+    }
+
     int SendUntilAll(int fd, const char *buf, int len) {
         int ret = 0;
         int total = 0;
         while (total < len) {
             ret = send(fd, buf + total, len - total, 0);
             if (ret < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                    continue;
+                }
                 return -1;
             }
             total += ret;

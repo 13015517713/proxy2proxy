@@ -17,6 +17,8 @@ namespace IO {
 
     int Select(fd_set& readfds, const int max_fd, const timeval& timeout);
 
+    int RecvUntilAll(int fd, char *buf, int len);
+
     int SendUntilAll(int fd, const char *buf, int len);
 
     HANDLE EpollCreate();

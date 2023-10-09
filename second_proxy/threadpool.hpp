@@ -35,7 +35,9 @@ namespace EventLoop {
 
             int local_fd, remote_fd;
             int ret = 0;
-
+            const int max_events = 256;
+            epoll_event events[max_events];
+            char buf[256];
             while (1) {
                 if (w.local2remote_.empty()) {
                     {
@@ -47,7 +49,10 @@ namespace EventLoop {
                     if (ret < 0) {
                         continue;
                     }
-                    
+
+                    // 为了防止饥饿。初始时：唤醒之后运行可能拿走所有的socket link，导致其他线程无法获取到socket link
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));  
+                
                     if (IO::SetNonBlocking(local_fd) < 0 || IO::SetNonBlocking(remote_fd) < 0) {
                         close(local_fd);
                         close(remote_fd);
@@ -73,10 +78,6 @@ namespace EventLoop {
                     }
                     std::cout << "thread " << w.id_ << " get socket link " << local_fd << " " << remote_fd << std::endl;
                 }
-                
-                // std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-                const int max_events = 10;
-                epoll_event events[max_events];
                 auto num_events = IO::EpollWait(epoll_fd, events, max_events, 0);
                 if (num_events < 0) {
                     std::cout << "Epoll wait error." << std::endl;
@@ -88,7 +89,6 @@ namespace EventLoop {
                     auto fd = ev.data.fd;
                     auto target_fd = w.local2remote_.count(fd) ? w.local2remote_[fd] : w.remote2local_[fd];
                     if (ev.events & EPOLLIN) {
-                        char buf[1024];
                         int len = recv(fd, buf, sizeof(buf), 0); // 非阻塞
                         // std::cout << "thread " << w.id_ << " recv " << len << " bytes from " << fd << std::endl;
                         if (len > 0) {
@@ -130,8 +130,13 @@ namespace EventLoop {
                     }
                 }
 
+                // std::cout << "thread " << w.id_ << " local2remote size: " << w.local2remote_.size() << std::endl;
+                if (usable_socket_links_.size() == 0) {
+                    continue;
+                }
                 ret = take(local_fd, remote_fd);
                 if (ret < 0) {
+                    std::cout << "thread " << w.id_ << " no socket link" << std::endl;
                     continue;
                 }
 
@@ -148,7 +153,8 @@ namespace EventLoop {
                 if (!add_ok) {
                     close(local_fd);
                     close(remote_fd);
-                    std::cout << "Failed to add epoll" << std::endl;
+                } else {
+                    std::cout << "thread " << w.id_ << " get socket link " << local_fd << " " << remote_fd << std::endl;
                 }
             }
 
