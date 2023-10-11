@@ -7,10 +7,10 @@
 #include "threadpool.hpp"
 namespace params{
     const int N = 4;  // 线程池大小
-    const char *LOCAL_IP = "127.0.0.1";
-    const int LOCAL_PROXY_PORT = 7890;  // 端口号
-    const char *REMOTE_IP = "172.24.0.100";
-    // const char *REMOTE_IP = "47.115.216.30";
+    const char *LOCAL_IP = "202.38.247.191";
+    const int LOCAL_PROXY_PORT = 22;  // 端口号
+    // const char *REMOTE_IP = "172.24.0.100";
+    const char *REMOTE_IP = "47.115.216.30";
     const int REMOTE_CONTROL_PORT = 12346;  // 控制端口号
     const int REMOTE_PROXY_IP = 12347; // 代理端口号
     const int PRE_SOCKET_LINKCNT = 128; // 预先申请的socket link数量
