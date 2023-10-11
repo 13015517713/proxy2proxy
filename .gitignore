@@ -1,2 +1,3 @@
-build/*
+first_proxy/build/*
+second_proxy/build/*
 .vscode/*
