@@ -7,12 +7,12 @@
 #include "threadpool.hpp"
 namespace params{
     const int N = 4;  // 线程池大小
-    const char *LOCAL_IP = "202.38.247.191";
-    const int LOCAL_PROXY_PORT = 22;  // 端口号
-    // const char *REMOTE_IP = "172.24.0.100";
-    const char *REMOTE_IP = "47.115.xxx.xx";
-    const int REMOTE_CONTROL_PORT = 12346;  // 控制端口号
-    const int REMOTE_PROXY_IP = 12347; // 代理端口号
+    const char *LOCAL_IP = "127.0.0.1";
+    const int LOCAL_PROXY_PORT = 7890;  // 端口号
+    const char *REMOTE_IP = "172.24.0.100";
+    // const char *REMOTE_IP = "47.115.216.30";
+    const int REMOTE_CONTROL_PORT = 12346;  // 控制端口号：用于向server申请link, one channel per one char
+    const int REMOTE_PROXY_IP = 12347; // 控制端口号：构建与真实代理间的channel
     const int PRE_SOCKET_LINKCNT = 128; // 预先申请的socket link数量
 }
 
@@ -101,7 +101,7 @@ int AcceptFdReq(int fd, EventLoop::EventLoop& loop) {
 
     int n = 0;
     int local_fd, remote_fd;
-    char buf[1024];
+    char buf[256];
     while (1) {
         n = recv(fd, buf, sizeof(buf), 0);
         if (n < 0) {
@@ -119,7 +119,7 @@ int AcceptFdReq(int fd, EventLoop::EventLoop& loop) {
         } else {
             all_need_cnt += n;
             uint16_t need_cnt = NeedSockLinkCnt(had_cnt, all_need_cnt + n);
-            // std::cout << "accept sock link req, has cnt: " << had_cnt << " all_need_cnt: " << all_need_cnt << std::endl;
+            std::cout << "accept sock link req, has cnt: " << had_cnt << " all_need_cnt: " << all_need_cnt << std::endl;
             for (int i=0; i<need_cnt; ++i) {
                 int ret = CreateSocketLink(local_fd, remote_fd);
                 if (ret < 0) {

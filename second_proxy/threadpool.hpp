@@ -37,7 +37,7 @@ namespace EventLoop {
             int ret = 0;
             const int max_events = 256;
             epoll_event events[max_events];
-            char buf[256];
+            char buf[4096];
             while (1) {
                 if (w.local2remote_.empty()) {
                     {
@@ -130,34 +130,60 @@ namespace EventLoop {
                     }
                 }
 
-                // std::cout << "thread " << w.id_ << " local2remote size: " << w.local2remote_.size() << std::endl;
-                if (usable_socket_links_.size() == 0) {
-                    continue;
-                }
-                ret = take(local_fd, remote_fd);
+                std::vector<std::pair<int, int>> sock_links_list;
+                ret = take_some(sock_links_list);
                 if (ret < 0) {
-                    std::cout << "thread " << w.id_ << " no socket link" << std::endl;
+                    // std::cout << "thread " << w.id_ << " no socket link" << std::endl;
                     continue;
                 }
-
-                auto add_ok = false;
-                if (IO::AddEpoll(epoll_fd, local_fd) == 0) {
-                    if (IO::AddEpoll(epoll_fd, remote_fd) == 0) {
-                        w.local2remote_[local_fd] = remote_fd;
-                        w.remote2local_[remote_fd] = local_fd;
-                        add_ok = true;
+                
+                // std::cout << "thread " << w.id_ << " get socket link cnt: " << sock_links_list.size() << std::endl;
+                for (auto &sock_link : sock_links_list) {
+                    local_fd = sock_link.first;
+                    remote_fd = sock_link.second;
+                    
+                    auto add_ok = false;
+                    if (IO::AddEpoll(epoll_fd, local_fd) == 0) {
+                        if (IO::AddEpoll(epoll_fd, remote_fd) == 0) {
+                            w.local2remote_[local_fd] = remote_fd;
+                            w.remote2local_[remote_fd] = local_fd;
+                            add_ok = true;
+                        } else {
+                            IO::DelEpoll(epoll_fd, local_fd);
+                        }
+                    }
+                    if (!add_ok) {
+                        close(local_fd);
+                        close(remote_fd);
+                        std::cout << "Failed to add epoll" << std::endl;
                     } else {
-                        IO::DelEpoll(epoll_fd, local_fd);
+                        std::cout << "thread " << w.id_ << " get socket link " << local_fd << " " << remote_fd << std::endl;
                     }
                 }
-                if (!add_ok) {
-                    close(local_fd);
-                    close(remote_fd);
-                } else {
-                    std::cout << "thread " << w.id_ << " get socket link " << local_fd << " " << remote_fd << std::endl;
-                }
-            }
 
+                // ret = take(local_fd, remote_fd); // 拿太少了，可能会因为网速问题处理链接不及时
+                // if (ret < 0) {
+                //     // std::cout << "thread " << w.id_ << " no socket link" << std::endl;
+                //     continue;
+                // }
+
+                // auto add_ok = false;
+                // if (IO::AddEpoll(epoll_fd, local_fd) == 0) {
+                //     if (IO::AddEpoll(epoll_fd, remote_fd) == 0) {
+                //         w.local2remote_[local_fd] = remote_fd;
+                //         w.remote2local_[remote_fd] = local_fd;
+                //         add_ok = true;
+                //     } else {
+                //         IO::DelEpoll(epoll_fd, local_fd);
+                //     }
+                // }
+                // if (!add_ok) {
+                //     close(local_fd);
+                //     close(remote_fd);
+                // } else {
+                //     std::cout << "thread " << w.id_ << " get socket link " << local_fd << " " << remote_fd << std::endl;
+                // }
+            }
         }
 
         // spawn threads
@@ -198,6 +224,26 @@ namespace EventLoop {
             usable_socket_links_.pop_front();
             local_fd = socket_link.first;
             remote_fd = socket_link.second;
+            return 0;
+        }
+
+        int take_some(std::vector<std::pair<int, int>>& socket_links) {
+            std::lock_guard<std::recursive_mutex> lock(mutex_socket_links_);
+            if (usable_socket_links_.size() == 0) {
+                return -1;
+            }
+
+            auto cnt = usable_socket_links_.size() / thread_len_;
+            if (cnt == 0) {
+                cnt = 1;
+            }
+
+            std::pair<int, int> socket_link;
+            for (int i = 0; i < cnt; ++i) {
+                socket_link = usable_socket_links_.front();
+                usable_socket_links_.pop_front();
+                socket_links.push_back(socket_link);
+            }
             return 0;
         }
 
