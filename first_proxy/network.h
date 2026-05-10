@@ -14,20 +14,22 @@ public:
   static int CreateEpoll();
   static int AddEpoll(int epoll_fd, int fd);
   static int DelEpoll(int epoll_fd, int fd);
+  // 在已经 AddEpoll 过的 fd 上, 开启写关注 (关注集 EPOLLIN | EPOLLOUT)
+  static int EnableEpollWrite(int epoll_fd, int fd);
+  // 在已经 AddEpoll 过的 fd 上, 关闭写关注 (关注集回到只 EPOLLIN)
+  static int DisableEpollWrite(int epoll_fd, int fd);
   static int EpollWait(int epoll_fd, epoll_event *events, int max_events,
                        int timeout);
 
   static int CreateListenSocket(const char *pszIP, const unsigned short shPort,
                                 bool bReuse = false);
   static int AcceptOneNonBlock(int fd, int &conn_fd);
+  // 单次非阻塞 send. 返回:
+  //   >  0: 实际写入字节数 (可能 < len)
+  //   == 0: EAGAIN/EWOULDBLOCK/EINTR, 应稍后重试
+  //   <  0: 致命错误, 应关闭连接
+  static int Send(int fd, const char *buf, int len);
 };
 
-int SetNonBlock(int fd);
-
-int Connect(int fd, const char *pszIP, const unsigned short shPort);
-
-int CreateConn(const std::string &host, const uint16_t port);
-
-int SendUntilAll(int fd, const char *buf, int len);
 
 } // namespace Network

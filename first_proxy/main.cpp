@@ -1,40 +1,16 @@
 #include <arpa/inet.h>
+#include <cassert>
+#include <csignal>
 #include <iostream>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
 #include "channel.h"
 #include "network.h"
 #include "transponder.h"
 
 using namespace Network;
-
-namespace {
-
-int AcceptSocklinkLoop(int fd, ThreadPool::ThreadPool &tp) {
-  int cnt = 0;
-  struct sockaddr_in addr;
-  while (true) {
-    int connfd = IO::Accept(fd, NULL);
-    if (connfd >= 0) {
-      if (IO::SetNonBlock(connfd) != 0) {
-        std::cout << "SetNonBlock error" << std::endl;
-        continue;
-      }
-      // 放到全局队列可用队列里
-      std::cout << "AcceptSocklink fd: " << connfd << " cnt: " << cnt
-                << std::endl;
-      tp.submit_socket_link(connfd);
-    } else {
-      if ((errno == EAGAIN) || (errno == EINTR) || (errno == EWOULDBLOCK)) {
-        continue;
-      }
-      return -1;
-    }
-  }
-  return 0;
-}
-} // namespace
 
 struct TransponderParams {
   const int transponder_thread_num = 4;
@@ -63,11 +39,11 @@ int RunTransponder() {
   assert(NetFunction::AcceptOneNonBlock(inner_control_listen_fd,
                                         inner_control_fd) == 0);
 
-  Channel::ChannelManager channels = Channel::ChannelManager::GetInstance();
-  channels.Init(outer_listen_fd, inner_link_listen_fd, inner_control_fd);
-
   Transponder::Transponder ts(ps.transponder_thread_num);
   ts.Spawn();
+
+  Channel::ChannelManager &channels = Channel::ChannelManager::GetInstance();
+  channels.Init(outer_listen_fd, inner_link_listen_fd, inner_control_fd, &ts);
 
   while (true) {
     sleep(1);

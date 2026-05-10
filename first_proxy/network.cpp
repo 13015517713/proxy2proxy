@@ -59,6 +59,20 @@ int NetFunction::DelEpoll(int epoll_fd, int fd) {
   return epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
 }
 
+int NetFunction::EnableEpollWrite(int epoll_fd, int fd) {
+  struct epoll_event ev;
+  ev.data.fd = fd;
+  ev.events = EPOLLIN | EPOLLOUT;
+  return epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
+}
+
+int NetFunction::DisableEpollWrite(int epoll_fd, int fd) {
+  struct epoll_event ev;
+  ev.data.fd = fd;
+  ev.events = EPOLLIN;
+  return epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
+}
+
 int NetFunction::EpollWait(int epoll_fd, struct epoll_event *events,
                            int max_events, int timeout) {
   int n = epoll_wait(epoll_fd, events, max_events, timeout);
@@ -114,95 +128,15 @@ int NetFunction::AcceptOneNonBlock(int fd, int &conn_fd) {
   return 0;
 }
 
-int Connect(int fd, const char *pszIP, const unsigned short shPort) {
-  struct sockaddr_in addr;
-  SetAddr(pszIP, shPort, addr);
-
-  return connect(fd, (struct sockaddr *)&addr, sizeof(addr));
-}
-
-int CreateConn(const std::string &host, const uint16_t port) {
-  // do connect
-  int ret = 0;
-
-  auto target_fd = IO::CreateTcpSocket();
-  if (target_fd < 0) {
-    std::cout << "CreateTcpSocket error: " << target_fd << std::endl;
-    return -1;
+int NetFunction::Send(int fd, const char *buf, int len) {
+  ssize_t r = send(fd, buf, len, MSG_NOSIGNAL);
+  if (r >= 0) {
+    return static_cast<int>(r);
   }
-
-  // prevent connect timeout
-  if (SetNonBlock(target_fd) != 0) {
-    return -1;
+  if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+    return 0;
   }
-
-  hostent *hostinfo = gethostbyname(host.c_str());
-  if (hostinfo == nullptr) {
-    std::cout << "gethostbyname error: " << h_errno << std::endl;
-    return -1;
-  }
-
-  ret = IO::Connect(target_fd, inet_ntoa(*(struct in_addr *)hostinfo->h_addr),
-                    port);
-  // 10ms timeout
-  if (ret < 0) {
-    if (errno == EINPROGRESS) {
-      struct timeval tv;
-      tv.tv_sec = 1;
-      tv.tv_usec = 0;
-      fd_set wset;
-      FD_ZERO(&wset);
-      FD_SET(target_fd, &wset);
-      ret = select(target_fd + 1, nullptr, &wset, nullptr, &tv);
-      if (ret == 0) {
-        std::cout << "Connect timeout "
-                  << " Host" << host << " Port" << port << std::endl;
-        return -1;
-      } else if (ret < 0) {
-        std::cout << "Connect error: " << ret << strerror(errno) << std::endl;
-        return -1;
-      } else {
-        int error = 0;
-        socklen_t len = sizeof(error);
-        ret = getsockopt(target_fd, SOL_SOCKET, SO_ERROR, &error, &len);
-        if (ret != 0) {
-          std::cout << "getsockopt error: " << ret << strerror(errno)
-                    << std::endl;
-          return -1;
-        }
-        if (error != 0) {
-          std::cout << "Connect error: " << error << strerror(error)
-                    << std::endl;
-          return -1;
-        }
-      }
-    } else {
-      std::cout << "Connect error: " << ret << strerror(errno) << std::endl;
-      return -1;
-    }
-  }
-
-  // if (ret != 0) {
-  //     std::cout << "Connect error: " << ret << strerror(errno) << std::endl;
-  //     return -1;
-  // }
-
-  return target_fd;
-}
-
-int SendUntilAll(int fd, const char *buf, int len) {
-  int n = 0;
-  while (n < len) {
-    int ret = send(fd, buf + n, len - n, 0);
-    if (ret < 0) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
-        continue;
-      }
-      return -1;
-    }
-    n += ret;
-  }
-  return n;
+  return -1;
 }
 
 }; // namespace Network
